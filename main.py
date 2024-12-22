@@ -105,4 +105,15 @@ else:
 
 os.system(merge_command)
 
+# Cleanup temporary .ts files
+def cleanup_temp_files(files):
+    for file in files:
+        if os.path.exists(file):
+            os.remove(file)
+            print(f"Deleted temporary file: {file}")
+
+# Delete temp .ts files after merging
+temp_files = [video_output, audio_output] if audio_output else [video_output]
+cleanup_temp_files(temp_files)
+
 print(f"\nDownload complete! Final file saved as: {output_file}")
