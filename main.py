@@ -5,22 +5,14 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, List
 from urllib.parse import urljoin
 from webvtt import WebVTT, Caption
-from datetime import timedelta
 from pathlib import Path
-import subprocess
-import json
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import aiohttp
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
 from rich.table import Table
-from rich.syntax import Syntax
-from rich.prompt import Confirm
 import questionary
-from rich.live import Live
-from rich.layout import Layout
 from rich.text import Text
 
 console = Console()
