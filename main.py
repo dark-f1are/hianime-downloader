@@ -340,7 +340,9 @@ async def get_user_selections(tracks: dict) -> Tuple[str, Optional[str], float, 
     ))
     
     subtitle_url = await loop.run_in_executor(None, lambda: 
-        questionary.text("Enter subtitle URL (press Enter to skip):").ask() or None
+        questionary.text("Enter subtitle URL (press Enter to skip):",
+        default="https://s.megastatics.com/subtitle/73fd2e74257659a8ef9b9cdd004623a5/eng-2.vtt"
+        ).ask() or None
     )
 
     proceed = await loop.run_in_executor(None, lambda:
@@ -365,12 +367,12 @@ def main():
         # Get initial configuration synchronously
         master_url = questionary.text(
             "Enter master playlist URL:",
-            default="https://eg.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119050cc27c1f976e6d766aae31bcbdba567534557250b4cd73b75febfef2369bf13bd44ec7f5315b9d18ac275cd0e21a51dc4549bce22b66d65db966a44acabbab190ff7895a783f3c657e712d8318669112333bab8112c48e37e91e38cbf7e6c1b9/master.m3u8"
+            default="https://ea.netmagcdn.com:2228/hls-playback/71f87b4028d27b3ba749bd2029f3248245618a740ca81a9a9863f257784436f85c939482f4d306945639b935dc612f2301545789ad4dc7de51a80e913bb3a3742a8e5af4060cdb6a0add8dfb604387dffe89376fd5be53a44f2fc02d3049492cbd74c71e489e999c86a63e638984e9e001a253396824dd052695b8d37d1f7ef7e3d8042c93999ed50b12af67471fe106/master.m3u8"
         ).ask()
         
         output_dir = questionary.text(
             "Enter output directory:",
-            default="Videos"
+            default="/home/tawsif/Videos"
         ).ask()
 
         config = DownloadConfig(master_url=master_url, output_dir=output_dir)
