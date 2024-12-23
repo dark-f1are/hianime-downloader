@@ -365,12 +365,12 @@ def main():
         # Get initial configuration synchronously
         master_url = questionary.text(
             "Enter master playlist URL:",
-            default="https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
+            default="https://eg.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119050cc27c1f976e6d766aae31bcbdba567534557250b4cd73b75febfef2369bf13bd44ec7f5315b9d18ac275cd0e21a51dc4549bce22b66d65db966a44acabbab190ff7895a783f3c657e712d8318669112333bab8112c48e37e91e38cbf7e6c1b9/master.m3u8"
         ).ask()
         
         output_dir = questionary.text(
             "Enter output directory:",
-            default="downloads"
+            default="Videos"
         ).ask()
 
         config = DownloadConfig(master_url=master_url, output_dir=output_dir)
@@ -429,7 +429,7 @@ def main():
 
                 # Merge streams
                 console.print("[bold green]Merging streams...[/bold green]")
-                output_path = str(Path(config.output_dir) / "output_partial.mp4")
+                output_path = str(Path(config.output_dir) / "output_partial.mkv")
                 await downloader.merge_streams(video_path, audio_path, output_path)
 
                 # Cleanup
