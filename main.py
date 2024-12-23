@@ -4,7 +4,7 @@ import os
 from urllib.parse import urljoin
 
 # Base master playlist URL
-master_playlist_url = "https://ea.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d4211905411e71b641939b7405873999f4b679ed3f47ab3cf77d1e079742fa3170aa219bbb07c4656f4a607811cefa77e252bf951953e9ab8f96521c1bca0e6a8b6960c1e831a01ffc88fda38628cc65cf0f7ba30256ad8e83e127a0a12b90f451abbf7a/master.m3u8"
+master_playlist_url = "https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
 
 # Load the master playlist
 master_playlist = m3u8.load(master_playlist_url)
@@ -93,6 +93,15 @@ video_output = download_partial_m3u8(selected_video_url, start_time, end_time, "
 audio_output = None
 if selected_audio_url:
     audio_output = download_partial_m3u8(selected_audio_url, start_time, end_time, "downloads", "partial_audio.ts")
+
+# Download the subtitle file if present (you can modify the subtitle URL accordingly)
+subtitle_url = "https://s.megastatics.com/subtitle/f1ce9102d7b9e18f52c4b5376121c81b/eng-3.vtt"  # Replace with the actual subtitle URL
+subtitle_file = "downloads/subtitle.vtt"
+response = requests.get(subtitle_url)
+with open(subtitle_file, 'wb') as f:
+    f.write(response.content)
+
+print(f"\nSubtitle file saved: {subtitle_file}")
 
 # Merge audio and video using FFmpeg (if audio is available)
 output_file = "downloads/output_partial.mp4"
