@@ -2,6 +2,8 @@ import m3u8
 import requests
 import os
 from urllib.parse import urljoin
+from datetime import timedelta
+from webvtt import WebVTT, Caption
 
 # Base master playlist URL
 master_playlist_url = "https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
@@ -84,24 +86,54 @@ def download_partial_m3u8(m3u8_url, start_time, end_time, output_dir, output_nam
             total_time += segment_duration
 
     print(f"Partial file saved: {output_path}")
-    return output_path
+    return output_path, total_time
 
 # Download the selected partial video stream
-video_output = download_partial_m3u8(selected_video_url, start_time, end_time, "downloads", "partial_video.ts")
+video_output, video_duration = download_partial_m3u8(selected_video_url, start_time, end_time, "downloads", "partial_video.ts")
 
 # Download the selected partial audio stream (if available)
 audio_output = None
 if selected_audio_url:
-    audio_output = download_partial_m3u8(selected_audio_url, start_time, end_time, "downloads", "partial_audio.ts")
+    audio_output, audio_duration = download_partial_m3u8(selected_audio_url, start_time, end_time, "downloads", "partial_audio.ts")
 
 # Download the subtitle file if present (you can modify the subtitle URL accordingly)
-subtitle_url = "https://s.megastatics.com/subtitle/f1ce9102d7b9e18f52c4b5376121c81b/eng-3.vtt"  # Replace with the actual subtitle URL
+subtitle_url = "https://s.megastatics.com/subtitle/f1ce9102d7b9e18f52c4b5376121c81b/eng-3.vtt"
 subtitle_file = "downloads/subtitle.vtt"
 response = requests.get(subtitle_url)
 with open(subtitle_file, 'wb') as f:
     f.write(response.content)
 
 print(f"\nSubtitle file saved: {subtitle_file}")
+
+# Modify subtitle timing to keep only the relevant range
+def adjust_subtitle_timing(input_file, output_file, start, end):
+    vtt = WebVTT().read(input_file)
+    captions_to_keep = []
+    
+    for caption in vtt:
+        start_time = timedelta(
+            hours=int(caption.start[:2]),
+            minutes=int(caption.start[3:5]),
+            seconds=int(caption.start[6:8]),
+            milliseconds=int(caption.start[9:12])
+        )
+        end_time = timedelta(
+            hours=int(caption.end[:2]),
+            minutes=int(caption.end[3:5]),
+            seconds=int(caption.end[6:8]),
+            milliseconds=int(caption.end[9:12])
+        )
+
+        if start <= start_time.total_seconds() <= end or start <= end_time.total_seconds() <= end:
+            captions_to_keep.append(Caption(start=caption.start, end=caption.end, text=caption.text))
+    
+    new_vtt = WebVTT()
+    new_vtt.captions = captions_to_keep
+    new_vtt.save(output_file)
+
+adjusted_subtitle_file = "downloads/adjusted_subtitle.vtt"
+adjust_subtitle_timing(subtitle_file, adjusted_subtitle_file, start_time, end_time)
+print(f"Adjusted subtitle file saved as: {adjusted_subtitle_file}")
 
 # Merge audio and video using FFmpeg (if audio is available)
 output_file = "downloads/output_partial.mp4"
