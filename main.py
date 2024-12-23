@@ -93,10 +93,10 @@ def download_partial_m3u8(m3u8_url, start_time, end_time, output_dir, output_nam
     return output_path, initial_total_time  # Return the file path and the initial total time
 
 # Function to adjust subtitle timing
-def adjust_subtitle_timing(input_file, output_file, initial_total_time):
+def adjust_subtitle_timing(input_file, output_file, initial_total_time, start, end):
     vtt = WebVTT().read(input_file)
-    adjusted_captions = []
-
+    captions_to_keep = []
+    
     for caption in vtt:
         # Parse start and end times
         start_time_obj = timedelta(
@@ -112,13 +112,15 @@ def adjust_subtitle_timing(input_file, output_file, initial_total_time):
             milliseconds=int(caption.end[9:12])
         )
 
-        # Subtract initial_total_time
+        # Adjust the times by subtracting the initial total time
         adjusted_start = start_time_obj.total_seconds() - initial_total_time
         adjusted_end = end_time_obj.total_seconds() - initial_total_time
 
-        # Only keep captions with positive adjusted times
-        if adjusted_end > 0:
-            adjusted_start = max(0, adjusted_start)  # Ensure start time is not negative
+        # Only keep the subtitles that fall completely within the clip's time range
+        if start <= start_time_obj.total_seconds() <= end or start <= end_time_obj.total_seconds() <= end:
+            # Ensure adjusted start time is non-negative
+            adjusted_start = max(0, adjusted_start)
+
             adjusted_start_obj = timedelta(seconds=adjusted_start)
             adjusted_end_obj = timedelta(seconds=adjusted_end)
 
@@ -127,11 +129,11 @@ def adjust_subtitle_timing(input_file, output_file, initial_total_time):
             formatted_end = f"{int(adjusted_end_obj.seconds // 3600):02}:{int((adjusted_end_obj.seconds % 3600) // 60):02}:{int(adjusted_end_obj.seconds % 60):02}.{int(adjusted_end_obj.microseconds // 1000):03}"
 
             # Append the adjusted caption
-            adjusted_captions.append(Caption(start=formatted_start, end=formatted_end, text=caption.text))
-
+            captions_to_keep.append(Caption(start=formatted_start, end=formatted_end, text=caption.text))
+    
     # Save the adjusted subtitles
     new_vtt = WebVTT()
-    new_vtt.captions = adjusted_captions
+    new_vtt.captions = captions_to_keep
     new_vtt.save(output_file)
 
 # Download the selected partial video stream
@@ -153,7 +155,7 @@ print(f"\nSubtitle file saved: {subtitle_file}")
 
 # Adjust subtitle timing
 adjusted_subtitle_file = "downloads/adjusted_subtitle.vtt"
-adjust_subtitle_timing(subtitle_file, adjusted_subtitle_file, initial_total_time_video)
+adjust_subtitle_timing(subtitle_file, adjusted_subtitle_file, initial_total_time_video, start_time, end_time)
 
 print(f"\nAdjusted subtitle file saved: {adjusted_subtitle_file}")
 
