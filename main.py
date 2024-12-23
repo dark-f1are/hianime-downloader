@@ -13,6 +13,18 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import aiohttp
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.panel import Panel
+from rich.table import Table
+from rich.syntax import Syntax
+from rich.prompt import Confirm
+import questionary
+from rich.live import Live
+from rich.layout import Layout
+from rich.text import Text
+
+console = Console()
 
 @dataclass
 class VideoTrack:
@@ -26,6 +38,33 @@ class AudioTrack:
     name: str
     url: str
 
+@dataclass
+class DownloadConfig:
+    master_url: str
+    output_dir: str
+    selected_resolution: Optional[str] = None
+    selected_language: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    subtitle_url: Optional[str] = None
+
+class DownloadProgress:
+    def __init__(self):
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+        )
+        self.download_task = None
+
+    def __enter__(self):
+        return self.progress.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self.progress.__exit__(exc_type, exc_val, exc_tb)
+
 class HLSDownloader:
     def __init__(self, master_playlist_url: str, output_dir: str = "downloads"):
         """Initialize the HLS downloader with the master playlist URL."""
@@ -36,6 +75,7 @@ class HLSDownloader:
         self.audio_tracks: Dict[str, AudioTrack] = {}
         self.setup_logging()
         self.session = requests.Session()
+        self.progress = DownloadProgress()
 
     def setup_logging(self):
         """Configure logging for the application."""
@@ -101,7 +141,7 @@ class HLSDownloader:
         end_time: float,
         output_name: str
     ) -> Tuple[str, float]:
-        """Download a partial stream asynchronously."""
+        """Download a partial stream asynchronously with progress bar."""
         output_path = self.output_dir / output_name
         playlist = m3u8.load(playlist_url)
         total_time = 0
@@ -121,10 +161,19 @@ class HLSDownloader:
             segments_to_download.append(segment_url)
             total_time += segment.duration
 
-        # Download segments concurrently
+        # Download segments with progress bar
         async with aiohttp.ClientSession() as session:
-            tasks = [self._download_segment(session, url) for url in segments_to_download]
-            segment_contents = await asyncio.gather(*tasks)
+            with self.progress as progress:
+                task = progress.add_task(
+                    f"[cyan]Downloading {output_name}...",
+                    total=len(segments_to_download)
+                )
+                
+                segment_contents = []
+                for url in segments_to_download:
+                    content = await self._download_segment(session, url)
+                    segment_contents.append(content)
+                    progress.update(task, advance=1)
 
         # Write segments to file
         with open(output_path, 'wb') as f:
@@ -243,128 +292,194 @@ class HLSDownloader:
             except Exception as e:
                 self.logger.warning(f"Failed to delete {file}: {str(e)}")
 
-async def main():
+# Add new UI helper functions
+async def display_intro():
+    """Display an attractive intro banner."""
+    intro_text = Text()
+    intro_text.append("🎬 ", style="bold yellow")
+    intro_text.append("HLS Video Downloader", style="bold blue")
+    intro_text.append(" 🎬", style="bold yellow")
+    
+    panel = Panel(
+        intro_text,
+        subtitle="Made with ❤️  using Python",
+        border_style="cyan"
+    )
+    console.print(panel)
+    console.print()
+
+def create_tracks_table(tracks: dict) -> Table:
+    """Create a table to display available tracks."""
+    table = Table(title="Available Tracks", show_header=True, header_style="bold magenta")
+    table.add_column("Type", style="dim", width=12)
+    table.add_column("Resolution/Language", style="dim", width=20)
+    table.add_column("Bandwidth/Name", style="dim", width=20)
+
+    for res, track in tracks["video_tracks"].items():
+        table.add_row("Video", res, str(track["bandwidth"]))
+
+    for lang, track in tracks["audio_tracks"].items():
+        table.add_row("Audio", lang, track["name"])
+
+    return table
+
+def get_complete_config() -> DownloadConfig:
+    """Get all user configuration upfront before any async operations."""
+    config = DownloadConfig(
+        master_url=questionary.text(
+            "Enter master playlist URL:",
+            default="https://example.com/master.m3u8"
+        ).ask(),
+        output_dir=questionary.text(
+            "Enter output directory:",
+            default="downloads"
+        ).ask()
+    )
+    return config
+
+async def get_user_selections(tracks: dict) -> Tuple[str, Optional[str], float, float, Optional[str]]:
+    """Get user selections for tracks and timing in an async-safe way."""
+    resolution = list(tracks["video_tracks"].keys())[0]  # Default to first resolution
+    language = None
+    start_time = 0.0
+    end_time = 60.0
+    subtitle_url = None
+
+    loop = asyncio.get_event_loop()
+    # Run questionary prompts in executor to avoid event loop issues
+    resolution = await loop.run_in_executor(None, lambda: questionary.select(
+        "Select video resolution:",
+        choices=list(tracks["video_tracks"].keys())
+    ).ask())
+
+    if tracks["audio_tracks"]:
+        lang = await loop.run_in_executor(None, lambda: questionary.select(
+            "Select audio language:",
+            choices=["None"] + list(tracks["audio_tracks"].keys())
+        ).ask())
+        language = None if lang == "None" else lang
+
+    start_time = await loop.run_in_executor(None, lambda: float(
+        questionary.text("Enter start time in seconds:").ask()
+    ))
+    
+    end_time = await loop.run_in_executor(None, lambda: float(
+        questionary.text("Enter end time in seconds:").ask()
+    ))
+    
+    subtitle_url = await loop.run_in_executor(None, lambda: 
+        questionary.text("Enter subtitle URL (press Enter to skip):").ask() or None
+    )
+
+    proceed = await loop.run_in_executor(None, lambda:
+        questionary.confirm("Proceed with download?").ask()
+    )
+
+    if not proceed:
+        raise RuntimeError("Download cancelled by user")
+
+    return resolution, language, start_time, end_time, subtitle_url
+
+def main():
+    """Synchronous entry point that handles async operations."""
     try:
-        # Get the master playlist URL from user
-        master_playlist_url = input("Enter the master playlist URL: ").strip()
-        if not master_playlist_url:
-            master_playlist_url = "https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
-            print(f"Using default URL: {master_playlist_url}")
+        # Display intro
+        console.print(Panel(
+            Text.assemble(("🎬 ", "bold yellow"), ("HLS Video Downloader", "bold blue"), (" 🎬", "bold yellow")),
+            subtitle="Made with ❤️  using Python",
+            border_style="cyan"
+        ))
 
-        # Initialize downloader
-        downloader = HLSDownloader(master_playlist_url, "downloads")
-        await downloader.initialize()
-
-        # Display available tracks
-        tracks = downloader.get_available_tracks()
+        # Get initial configuration synchronously
+        master_url = questionary.text(
+            "Enter master playlist URL:",
+            default="https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
+        ).ask()
         
-        print("\nAvailable Video Resolutions:")
-        for res, track in tracks["video_tracks"].items():
-            print(f"- {res} (Bandwidth: {track['bandwidth']})")
+        output_dir = questionary.text(
+            "Enter output directory:",
+            default="downloads"
+        ).ask()
 
-        print("\nAvailable Audio Tracks:")
-        if tracks["audio_tracks"]:
-            for lang, track in tracks["audio_tracks"].items():
-                print(f"- {lang}: {track['name']}")
-        else:
-            print("No separate audio tracks available")
+        config = DownloadConfig(master_url=master_url, output_dir=output_dir)
 
-        # Get user selections
-        while True:
-            selected_resolution = input("\nSelect video resolution (e.g., '1920x1080'): ").strip()
-            if selected_resolution in tracks["video_tracks"]:
-                break
-            print("Invalid resolution. Please choose from the available options.")
-
-        selected_language = None
-        if tracks["audio_tracks"]:
-            while True:
-                selected_language = input("Select audio language (press Enter to skip): ").strip()
-                if not selected_language or selected_language in tracks["audio_tracks"]:
-                    break
-                print("Invalid language. Please choose from the available options.")
-
-        # Get time range
-        while True:
+        async def async_operations(config: DownloadConfig):
             try:
-                start_time = float(input("\nEnter start time in seconds: "))
-                end_time = float(input("Enter end time in seconds: "))
-                if start_time >= 0 and end_time > start_time:
-                    break
-                print("Invalid time range. End time must be greater than start time.")
-            except ValueError:
-                print("Please enter valid numbers for start and end times.")
+                with console.status("[bold green]Initializing downloader..."):
+                    downloader = HLSDownloader(config.master_url, config.output_dir)
+                    await downloader.initialize()
 
-        # Get subtitle URL
-        subtitle_url = input("\nEnter subtitle URL (press Enter to skip): ").strip()
+                # Show available tracks
+                tracks = downloader.get_available_tracks()
+                console.print("\n[bold cyan]Available Tracks:[/bold cyan]")
+                console.print(create_tracks_table(tracks))
 
-        # Create configuration from user input
-        config = {
-            "master_playlist_url": master_playlist_url,
-            "subtitle_url": subtitle_url if subtitle_url else None,
-            "output_dir": "downloads",
-            "start_time": start_time,
-            "end_time": end_time,
-            "selected_resolution": selected_resolution,
-            "selected_language": selected_language
-        }
+                # Get user selections
+                resolution, language, start_time, end_time, subtitle_url = await get_user_selections(tracks)
+                
+                # Update config
+                config.selected_resolution = resolution
+                config.selected_language = language
+                config.start_time = start_time
+                config.end_time = end_time
+                config.subtitle_url = subtitle_url
 
-        # Display confirmed configuration
-        print("\nSelected Configuration:")
-        print(json.dumps(config, indent=2))
+                # Download video stream
+                console.print("\n[bold green]Downloading video stream...[/bold green]")
+                video_path, video_initial_time = await downloader.download_partial_stream(
+                    downloader.video_tracks[config.selected_resolution].url,
+                    config.start_time,
+                    config.end_time,
+                    "partial_video.ts"
+                )
 
-        # Confirm proceed
-        if input("\nProceed with download? (y/n): ").lower() != 'y':
-            print("Download cancelled.")
-            return
+                # Download audio stream if selected
+                audio_path = None
+                if config.selected_language:
+                    console.print("[bold green]Downloading audio stream...[/bold green]")
+                    audio_path, _ = await downloader.download_partial_stream(
+                        downloader.audio_tracks[config.selected_language].url,
+                        config.start_time,
+                        config.end_time,
+                        "partial_audio.ts"
+                    )
 
-        # Download video stream
-        print("\nDownloading video stream...")
-        video_path, video_initial_time = await downloader.download_partial_stream(
-            downloader.video_tracks[config["selected_resolution"]].url,
-            config["start_time"],
-            config["end_time"],
-            "partial_video.ts"
-        )
+                # Process subtitles if URL provided
+                subtitle_path = None
+                if config.subtitle_url:
+                    console.print("[bold green]Processing subtitles...[/bold green]")
+                    subtitle_path = await downloader.process_subtitles(
+                        config.subtitle_url,
+                        video_initial_time,
+                        config.start_time,
+                        config.end_time
+                    )
 
-        # Download audio stream if selected
-        audio_path = None
-        if config["selected_language"]:
-            print("Downloading audio stream...")
-            audio_path, _ = await downloader.download_partial_stream(
-                downloader.audio_tracks[config["selected_language"]].url,
-                config["start_time"],
-                config["end_time"],
-                "partial_audio.ts"
-            )
+                # Merge streams
+                console.print("[bold green]Merging streams...[/bold green]")
+                output_path = str(Path(config.output_dir) / "output_partial.mp4")
+                await downloader.merge_streams(video_path, audio_path, output_path)
 
-        # Process subtitles if URL provided
-        subtitle_path = None
-        if config["subtitle_url"]:
-            print("Processing subtitles...")
-            subtitle_path = await downloader.process_subtitles(
-                config["subtitle_url"],
-                video_initial_time,
-                config["start_time"],
-                config["end_time"]
-            )
+                # Cleanup
+                temp_files = [f for f in [video_path, audio_path] if f]
+                downloader.cleanup(temp_files)
 
-        # Merge streams
-        print("Merging streams...")
-        output_path = str(Path(config["output_dir"]) / "output_partial.mp4")
-        await downloader.merge_streams(video_path, audio_path, output_path)
+                console.print(f"\n[bold green]Download complete! Final file saved as: {output_path}[/bold green]")
+                if subtitle_path:
+                    console.print(f"[bold green]Subtitles saved as: {subtitle_path}[/bold green]")
 
-        # Cleanup
-        temp_files = [f for f in [video_path, audio_path] if f]
-        downloader.cleanup(temp_files)
+            except Exception as e:
+                console.print(f"[bold red]Error: {str(e)}[/bold red]")
+                logging.error(f"Download failed: {str(e)}")
+                raise
 
-        print(f"\nDownload complete! Final file saved as: {output_path}")
-        if subtitle_path:
-            print(f"Subtitles saved as: {subtitle_path}")
+        # Run async operations
+        asyncio.run(async_operations(config))
 
     except Exception as e:
-        logging.error(f"Download failed: {str(e)}")
+        console.print(f"[bold red]Fatal error: {str(e)}[/bold red]")
+        logging.error(f"Application failed: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
