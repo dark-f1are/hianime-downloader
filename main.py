@@ -1,184 +1,370 @@
 import m3u8
 import requests
 import os
+import logging
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple, List
 from urllib.parse import urljoin
 from webvtt import WebVTT, Caption
 from datetime import timedelta
+from pathlib import Path
+import subprocess
+import json
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import aiohttp
 
-# Base master playlist URL
-master_playlist_url = "https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
+@dataclass
+class VideoTrack:
+    resolution: str
+    bandwidth: int
+    url: str
 
-# Load the master playlist
-master_playlist = m3u8.load(master_playlist_url)
+@dataclass
+class AudioTrack:
+    language: str
+    name: str
+    url: str
 
-# Extract base URL from master playlist
-base_url = master_playlist_url.rsplit('/', 1)[0] + '/'
+class HLSDownloader:
+    def __init__(self, master_playlist_url: str, output_dir: str = "downloads"):
+        """Initialize the HLS downloader with the master playlist URL."""
+        self.master_playlist_url = master_playlist_url
+        self.output_dir = Path(output_dir)
+        self.base_url = master_playlist_url.rsplit('/', 1)[0] + '/'
+        self.video_tracks: Dict[str, VideoTrack] = {}
+        self.audio_tracks: Dict[str, AudioTrack] = {}
+        self.setup_logging()
+        self.session = requests.Session()
 
-# Parse audio languages (if present)
-audio_tracks = {}
-if master_playlist.media:
-    for media in master_playlist.media:
-        audio_tracks[media.language] = {
-            "name": media.name,
-            "url": urljoin(base_url, media.uri)
+    def setup_logging(self):
+        """Configure logging for the application."""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(self.output_dir / 'download.log'),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+
+    async def initialize(self):
+        """Initialize by parsing the master playlist."""
+        try:
+            self.output_dir.mkdir(exist_ok=True)
+            master_playlist = m3u8.load(self.master_playlist_url)
+            self._parse_master_playlist(master_playlist)
+        except Exception as e:
+            self.logger.error(f"Failed to initialize: {str(e)}")
+            raise
+
+    def _parse_master_playlist(self, master_playlist: m3u8.M3U8):
+        """Parse the master playlist to extract video and audio tracks."""
+        # Parse audio tracks
+        if master_playlist.media:
+            for media in master_playlist.media:
+                if media.type == "AUDIO":
+                    self.audio_tracks[media.language] = AudioTrack(
+                        language=media.language,
+                        name=media.name,
+                        url=urljoin(self.base_url, media.uri)
+                    )
+
+        # Parse video tracks
+        for playlist in master_playlist.playlists:
+            resolution = playlist.stream_info.resolution
+            res_str = f"{resolution[0]}x{resolution[1]}"
+            self.video_tracks[res_str] = VideoTrack(
+                resolution=res_str,
+                bandwidth=playlist.stream_info.bandwidth,
+                url=urljoin(self.base_url, playlist.uri)
+            )
+
+    def get_available_tracks(self) -> dict:
+        """Return information about available tracks."""
+        return {
+            "video_tracks": {k: v.__dict__ for k, v in self.video_tracks.items()},
+            "audio_tracks": {k: v.__dict__ for k, v in self.audio_tracks.items()}
         }
 
-# Parse video resolutions
-video_tracks = {}
-for playlist in master_playlist.playlists:
-    resolution = playlist.stream_info.resolution
-    video_tracks[f"{resolution[0]}x{resolution[1]}"] = {
-        "bandwidth": playlist.stream_info.bandwidth,
-        "url": urljoin(base_url, playlist.uri)
-    }
+    async def _download_segment(self, session: aiohttp.ClientSession, segment_url: str) -> bytes:
+        """Download a single segment using aiohttp."""
+        async with session.get(segment_url) as response:
+            response.raise_for_status()
+            return await response.read()
 
-# Display available options to the user
-print("Available Video Resolutions:")
-for resolution in video_tracks.keys():
-    print(resolution)
+    async def download_partial_stream(
+        self,
+        playlist_url: str,
+        start_time: float,
+        end_time: float,
+        output_name: str
+    ) -> Tuple[str, float]:
+        """Download a partial stream asynchronously."""
+        output_path = self.output_dir / output_name
+        playlist = m3u8.load(playlist_url)
+        total_time = 0
+        initial_total_time = 0
+        segments_to_download = []
 
-if audio_tracks:
-    print("\nAvailable Audio Languages:")
-    for lang, details in audio_tracks.items():
-        print(f"{lang}: {details['name']}")
-else:
-    print("\nNo audio tracks available.")
-
-# Get user choices
-selected_res = input("\nSelect resolution (e.g., '1920x1080'): ")
-selected_lang = None
-if audio_tracks:
-    selected_lang = input("Select language (or press Enter to skip audio): ").strip()
-
-start_time = float(input("\nEnter start time in seconds: "))
-end_time = float(input("Enter end time in seconds: "))
-
-# Get selected URLs
-selected_video_url = video_tracks[selected_res]["url"]
-selected_audio_url = None
-if selected_lang and selected_lang in audio_tracks:
-    selected_audio_url = audio_tracks[selected_lang]["url"]
-
-# Create output directory
-os.makedirs("downloads", exist_ok=True)
-
-# Function to download a range of segments
-def download_partial_m3u8(m3u8_url, start_time, end_time, output_dir, output_name):
-    playlist = m3u8.load(m3u8_url)
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, output_name)
-
-    total_time = 0  # Track total elapsed time
-    initial_total_time = 0  # Will store total_time before the first segment is downloaded
-
-    with open(output_path, "wb") as output_file:
+        # Identify segments to download
         for segment in playlist.segments:
-            segment_duration = segment.duration
-            if total_time + segment_duration < start_time:
-                total_time += segment_duration
+            if total_time + segment.duration < start_time:
+                total_time += segment.duration
                 continue
-            if initial_total_time == 0:  # Set the initial time before downloading the first segment
+            if initial_total_time == 0:
                 initial_total_time = total_time
             if total_time > end_time:
                 break
-            segment_url = urljoin(m3u8_url.rsplit('/', 1)[0] + '/', segment.uri)
-            print(f"Downloading: {segment_url}")
-            response = requests.get(segment_url, stream=True)
-            response.raise_for_status()
-            for chunk in response.iter_content(chunk_size=8192):
-                output_file.write(chunk)
-            total_time += segment_duration
+            segment_url = urljoin(playlist_url.rsplit('/', 1)[0] + '/', segment.uri)
+            segments_to_download.append(segment_url)
+            total_time += segment.duration
 
-    print(f"Partial file saved: {output_path}")
-    return output_path, initial_total_time  # Return the file path and the initial total time
+        # Download segments concurrently
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._download_segment(session, url) for url in segments_to_download]
+            segment_contents = await asyncio.gather(*tasks)
 
-# Function to adjust subtitle timing
-def adjust_subtitle_timing(input_file, output_file, initial_total_time, start, end):
-    vtt = WebVTT().read(input_file)
-    captions_to_keep = []
-    
-    for caption in vtt:
-        # Parse start and end times
-        start_time_obj = timedelta(
-            hours=int(caption.start[:2]),
-            minutes=int(caption.start[3:5]),
-            seconds=int(caption.start[6:8]),
-            milliseconds=int(caption.start[9:12])
+        # Write segments to file
+        with open(output_path, 'wb') as f:
+            for content in segment_contents:
+                f.write(content)
+
+        return str(output_path), initial_total_time
+
+    async def process_subtitles(
+        self,
+        subtitle_url: str,
+        initial_time: float,
+        start_time: float,
+        end_time: float
+    ) -> str:
+        """Download and process subtitles."""
+        subtitle_path = self.output_dir / "subtitle.vtt"
+        adjusted_subtitle_path = self.output_dir / "adjusted_subtitle.vtt"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(subtitle_url) as response:
+                subtitle_content = await response.text()
+                with open(subtitle_path, 'w', encoding='utf-8') as f:
+                    f.write(subtitle_content)
+
+        self._adjust_subtitle_timing(
+            subtitle_path,
+            adjusted_subtitle_path,
+            initial_time,
+            start_time,
+            end_time
         )
-        end_time_obj = timedelta(
-            hours=int(caption.end[:2]),
-            minutes=int(caption.end[3:5]),
-            seconds=int(caption.end[6:8]),
-            milliseconds=int(caption.end[9:12])
+
+        return str(adjusted_subtitle_path)
+
+    def _adjust_subtitle_timing(
+        self,
+        input_file: Path,
+        output_file: Path,
+        initial_time: float,
+        start: float,
+        end: float
+    ):
+        """Adjust subtitle timing based on clip start and end times."""
+        vtt = WebVTT().read(str(input_file))
+        adjusted_captions = []
+
+        for caption in vtt:
+            start_time = self._parse_timestamp(caption.start)
+            end_time = self._parse_timestamp(caption.end)
+
+            adjusted_start = start_time - initial_time
+            adjusted_end = end_time - initial_time
+
+            if start <= start_time <= end or start <= end_time <= end:
+                adjusted_start = max(0, adjusted_start)
+                adjusted_captions.append(Caption(
+                    start=self._format_timestamp(adjusted_start),
+                    end=self._format_timestamp(adjusted_end),
+                    text=caption.text
+                ))
+
+        new_vtt = WebVTT()
+        new_vtt.captions = adjusted_captions
+        new_vtt.save(str(output_file))
+
+    @staticmethod
+    def _parse_timestamp(timestamp: str) -> float:
+        """Convert VTT timestamp to seconds."""
+        h, m, s = timestamp.split(':')
+        s, ms = s.split('.')
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+    @staticmethod
+    def _format_timestamp(seconds: float) -> str:
+        """Convert seconds to VTT timestamp format."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{int(seconds):02d}.{int((seconds % 1) * 1000):03d}"
+
+    async def merge_streams(
+        self,
+        video_path: str,
+        audio_path: Optional[str],
+        output_path: str
+    ):
+        """Merge video and audio streams using FFmpeg."""
+        try:
+            cmd = ['ffmpeg', '-i', video_path]
+            if audio_path:
+                cmd.extend(['-i', audio_path])
+            cmd.extend(['-c', 'copy', output_path, '-y'])
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise RuntimeError(f"FFmpeg error: {stderr.decode()}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to merge streams: {str(e)}")
+            raise
+
+    def cleanup(self, files: List[str]):
+        """Clean up temporary files."""
+        for file in files:
+            try:
+                if file and os.path.exists(file):
+                    os.remove(file)
+                    self.logger.info(f"Deleted temporary file: {file}")
+            except Exception as e:
+                self.logger.warning(f"Failed to delete {file}: {str(e)}")
+
+async def main():
+    try:
+        # Get the master playlist URL from user
+        master_playlist_url = input("Enter the master playlist URL: ").strip()
+        if not master_playlist_url:
+            master_playlist_url = "https://ec.netmagcdn.com:2228/hls-playback/23048f2535193fbbdac71b7ce21af40517ec675d4954fffc98e10363880825cba393aae242af810face55230d42119059ea55a2e098c4e57b5998db26b12188f1f9552ccc5ab77064bacf38d7479a50e3abebfbbb08d2817abdfc09c85096a92cd309b064dd24a19fbee8fd044bf47a7017740f4926f31800d3a008ef67d0341257d105a575d8037ed3c6fb3a0bbae33/master.m3u8"
+            print(f"Using default URL: {master_playlist_url}")
+
+        # Initialize downloader
+        downloader = HLSDownloader(master_playlist_url, "downloads")
+        await downloader.initialize()
+
+        # Display available tracks
+        tracks = downloader.get_available_tracks()
+        
+        print("\nAvailable Video Resolutions:")
+        for res, track in tracks["video_tracks"].items():
+            print(f"- {res} (Bandwidth: {track['bandwidth']})")
+
+        print("\nAvailable Audio Tracks:")
+        if tracks["audio_tracks"]:
+            for lang, track in tracks["audio_tracks"].items():
+                print(f"- {lang}: {track['name']}")
+        else:
+            print("No separate audio tracks available")
+
+        # Get user selections
+        while True:
+            selected_resolution = input("\nSelect video resolution (e.g., '1920x1080'): ").strip()
+            if selected_resolution in tracks["video_tracks"]:
+                break
+            print("Invalid resolution. Please choose from the available options.")
+
+        selected_language = None
+        if tracks["audio_tracks"]:
+            while True:
+                selected_language = input("Select audio language (press Enter to skip): ").strip()
+                if not selected_language or selected_language in tracks["audio_tracks"]:
+                    break
+                print("Invalid language. Please choose from the available options.")
+
+        # Get time range
+        while True:
+            try:
+                start_time = float(input("\nEnter start time in seconds: "))
+                end_time = float(input("Enter end time in seconds: "))
+                if start_time >= 0 and end_time > start_time:
+                    break
+                print("Invalid time range. End time must be greater than start time.")
+            except ValueError:
+                print("Please enter valid numbers for start and end times.")
+
+        # Get subtitle URL
+        subtitle_url = input("\nEnter subtitle URL (press Enter to skip): ").strip()
+
+        # Create configuration from user input
+        config = {
+            "master_playlist_url": master_playlist_url,
+            "subtitle_url": subtitle_url if subtitle_url else None,
+            "output_dir": "downloads",
+            "start_time": start_time,
+            "end_time": end_time,
+            "selected_resolution": selected_resolution,
+            "selected_language": selected_language
+        }
+
+        # Display confirmed configuration
+        print("\nSelected Configuration:")
+        print(json.dumps(config, indent=2))
+
+        # Confirm proceed
+        if input("\nProceed with download? (y/n): ").lower() != 'y':
+            print("Download cancelled.")
+            return
+
+        # Download video stream
+        print("\nDownloading video stream...")
+        video_path, video_initial_time = await downloader.download_partial_stream(
+            downloader.video_tracks[config["selected_resolution"]].url,
+            config["start_time"],
+            config["end_time"],
+            "partial_video.ts"
         )
 
-        # Adjust the times by subtracting the initial total time
-        adjusted_start = start_time_obj.total_seconds() - initial_total_time
-        adjusted_end = end_time_obj.total_seconds() - initial_total_time
+        # Download audio stream if selected
+        audio_path = None
+        if config["selected_language"]:
+            print("Downloading audio stream...")
+            audio_path, _ = await downloader.download_partial_stream(
+                downloader.audio_tracks[config["selected_language"]].url,
+                config["start_time"],
+                config["end_time"],
+                "partial_audio.ts"
+            )
 
-        # Only keep the subtitles that fall completely within the clip's time range
-        if start <= start_time_obj.total_seconds() <= end or start <= end_time_obj.total_seconds() <= end:
-            # Ensure adjusted start time is non-negative
-            adjusted_start = max(0, adjusted_start)
+        # Process subtitles if URL provided
+        subtitle_path = None
+        if config["subtitle_url"]:
+            print("Processing subtitles...")
+            subtitle_path = await downloader.process_subtitles(
+                config["subtitle_url"],
+                video_initial_time,
+                config["start_time"],
+                config["end_time"]
+            )
 
-            adjusted_start_obj = timedelta(seconds=adjusted_start)
-            adjusted_end_obj = timedelta(seconds=adjusted_end)
+        # Merge streams
+        print("Merging streams...")
+        output_path = str(Path(config["output_dir"]) / "output_partial.mp4")
+        await downloader.merge_streams(video_path, audio_path, output_path)
 
-            # Format the times back to the VTT format (hh:mm:ss.mmm)
-            formatted_start = f"{int(adjusted_start_obj.seconds // 3600):02}:{int((adjusted_start_obj.seconds % 3600) // 60):02}:{int(adjusted_start_obj.seconds % 60):02}.{int(adjusted_start_obj.microseconds // 1000):03}"
-            formatted_end = f"{int(adjusted_end_obj.seconds // 3600):02}:{int((adjusted_end_obj.seconds % 3600) // 60):02}:{int(adjusted_end_obj.seconds % 60):02}.{int(adjusted_end_obj.microseconds // 1000):03}"
+        # Cleanup
+        temp_files = [f for f in [video_path, audio_path] if f]
+        downloader.cleanup(temp_files)
 
-            # Append the adjusted caption
-            captions_to_keep.append(Caption(start=formatted_start, end=formatted_end, text=caption.text))
-    
-    # Save the adjusted subtitles
-    new_vtt = WebVTT()
-    new_vtt.captions = captions_to_keep
-    new_vtt.save(output_file)
+        print(f"\nDownload complete! Final file saved as: {output_path}")
+        if subtitle_path:
+            print(f"Subtitles saved as: {subtitle_path}")
 
-# Download the selected partial video stream
-video_output, initial_total_time_video = download_partial_m3u8(selected_video_url, start_time, end_time, "downloads", "partial_video.ts")
+    except Exception as e:
+        logging.error(f"Download failed: {str(e)}")
+        raise
 
-# Download the selected partial audio stream (if available)
-audio_output, initial_total_time_audio = None, None
-if selected_audio_url:
-    audio_output, initial_total_time_audio = download_partial_m3u8(selected_audio_url, start_time, end_time, "downloads", "partial_audio.ts")
-
-# Download the subtitle file
-subtitle_url = "https://s.megastatics.com/subtitle/f1ce9102d7b9e18f52c4b5376121c81b/eng-3.vtt"  # Replace with the actual subtitle URL
-subtitle_file = "downloads/subtitle.vtt"
-response = requests.get(subtitle_url)
-with open(subtitle_file, 'wb') as f:
-    f.write(response.content)
-
-print(f"\nSubtitle file saved: {subtitle_file}")
-
-# Adjust subtitle timing
-adjusted_subtitle_file = "downloads/adjusted_subtitle.vtt"
-adjust_subtitle_timing(subtitle_file, adjusted_subtitle_file, initial_total_time_video, start_time, end_time)
-
-print(f"\nAdjusted subtitle file saved: {adjusted_subtitle_file}")
-
-# Merge audio and video using FFmpeg (if audio is available)
-output_file = "downloads/output_partial.mp4"
-if audio_output:
-    print("\nMerging audio and video...")
-    merge_command = f"ffmpeg -i {video_output} -i {audio_output} -c copy {output_file} -y"
-else:
-    print("\nSaving video without audio...")
-    merge_command = f"ffmpeg -i {video_output} -c copy {output_file} -y"
-
-os.system(merge_command)
-
-# Cleanup temporary .ts files
-def cleanup_temp_files(files):
-    for file in files:
-        if os.path.exists(file):
-            os.remove(file)
-            print(f"Deleted temporary file: {file}")
-
-# Delete temp .ts files after merging
-temp_files = [video_output, audio_output] if audio_output else [video_output]
-cleanup_temp_files(temp_files)
-
-print(f"\nDownload complete! Final file saved as: {output_file}")
+if __name__ == "__main__":
+    asyncio.run(main())
