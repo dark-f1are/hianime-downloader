@@ -1,7 +1,6 @@
 import m3u8
 import requests
 import os
-import logging
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, List
 from urllib.parse import urljoin
@@ -73,21 +72,8 @@ class HLSDownloader:
         self.base_url = master_playlist_url.rsplit('/', 1)[0] + '/'
         self.video_tracks: Dict[str, VideoTrack] = {}
         self.audio_tracks: Dict[str, AudioTrack] = {}
-        self.setup_logging()
         self.session = requests.Session()
         self.progress = DownloadProgress()
-
-    def setup_logging(self):
-        """Configure logging for the application."""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(self.output_dir / 'download.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
 
     async def initialize(self):
         """Initialize by parsing the master playlist."""
@@ -96,7 +82,6 @@ class HLSDownloader:
             master_playlist = m3u8.load(self.master_playlist_url)
             self._parse_master_playlist(master_playlist)
         except Exception as e:
-            self.logger.error(f"Failed to initialize: {str(e)}")
             raise
 
     def _parse_master_playlist(self, master_playlist: m3u8.M3U8):
@@ -279,18 +264,13 @@ class HLSDownloader:
                 raise RuntimeError(f"FFmpeg error: {stderr.decode()}")
             
         except Exception as e:
-            self.logger.error(f"Failed to merge streams: {str(e)}")
             raise
 
     def cleanup(self, files: List[str]):
         """Clean up temporary files."""
         for file in files:
-            try:
-                if file and os.path.exists(file):
-                    os.remove(file)
-                    self.logger.info(f"Deleted temporary file: {file}")
-            except Exception as e:
-                self.logger.warning(f"Failed to delete {file}: {str(e)}")
+            if file and os.path.exists(file):
+                os.remove(file)
 
 # Add new UI helper functions
 async def display_intro():
@@ -470,7 +450,6 @@ def main():
 
             except Exception as e:
                 console.print(f"[bold red]Error: {str(e)}[/bold red]")
-                logging.error(f"Download failed: {str(e)}")
                 raise
 
         # Run async operations
@@ -478,7 +457,6 @@ def main():
 
     except Exception as e:
         console.print(f"[bold red]Fatal error: {str(e)}[/bold red]")
-        logging.error(f"Application failed: {str(e)}")
         raise
 
 if __name__ == "__main__":
