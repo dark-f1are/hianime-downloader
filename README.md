@@ -54,6 +54,14 @@ python main.py
 ### How to Use
 
 1. Get the master playlist URL from hianime.to:
+   
+   **Option 1: Using Browser Extension (Recommended)**
+   - Install the Media Stream Detector browser extension from [GitHub](https://github.com/abrar-wadud/media-stream-detector)
+   - Open the anime episode in your browser
+   - The extension will automatically detect and display the master.m3u8 and subtitle URLs
+   - Copy the required URLs
+
+   **Option 2: Manual Detection**
    - Open the anime episode in your browser
    - Open developer tools (F12)
    - Go to Network tab
@@ -63,10 +71,9 @@ python main.py
 2. In the application:
    - Paste the master playlist URL
    - Select output directory
-   - Click Load Tracks (GUI)
    - Choose video resolution
    - Choose audio track (if multiple available)
-   - Enter start and end times
+   - Enter start and end times (optional)
    - Add subtitle URL if needed
 
 ## Legal Notice
