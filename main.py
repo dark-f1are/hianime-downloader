@@ -14,7 +14,6 @@ from rich.panel import Panel
 from rich.table import Table
 import questionary
 from rich.text import Text
-from functools import partial
 from os.path import expanduser
 
 console = Console()

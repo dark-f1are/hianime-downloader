@@ -3,10 +3,7 @@ import asyncio
 import threading
 from main import HLSDownloader
 from pathlib import Path
-import tkinter as tk
 from tkinter import filedialog
-from PIL import Image
-import os
 from os.path import expanduser
 
 class HLSDownloaderGUI(ctk.CTk):
