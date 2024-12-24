@@ -63,9 +63,10 @@ python main.py
 2. In the application:
    - Paste the master playlist URL
    - Select output directory
+   - Click Load Tracks (GUI)
    - Choose video resolution
    - Choose audio track (if multiple available)
-   - Enter start and end times (optional)
+   - Enter start and end times
    - Add subtitle URL if needed
 
 ## Legal Notice
