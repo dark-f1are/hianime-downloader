@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog
 from PIL import Image
 import os
+from os.path import expanduser
 
 class HLSDownloaderGUI(ctk.CTk):
     def __init__(self):
@@ -20,7 +21,7 @@ class HLSDownloaderGUI(ctk.CTk):
 
         # Initialize variables
         self.url_var = ctk.StringVar()
-        self.output_dir_var = ctk.StringVar(value="downloads")
+        self.output_dir_var = ctk.StringVar(value=str(Path.home() / "Videos"))  # Default to user's Videos directory
         self.status_var = ctk.StringVar(value="Ready")
         self.available_tracks = None
         self.downloader = None
@@ -103,9 +104,9 @@ class HLSDownloaderGUI(ctk.CTk):
         ctk.CTkButton(button_frame, text="Download", command=self.start_download).pack(side="left", padx=5)
 
     def browse_output_dir(self):
-        dir_path = filedialog.askdirectory()
+        dir_path = filedialog.askdirectory(initialdir=expanduser(self.output_dir_var.get()))
         if dir_path:
-            self.output_dir_var.set(dir_path)
+            self.output_dir_var.set(str(Path(dir_path).resolve()))
 
     def load_tracks(self):
         self.status_var.set("Loading tracks...")
@@ -114,7 +115,10 @@ class HLSDownloaderGUI(ctk.CTk):
     def _async_load_tracks(self):
         async def load():
             try:
-                self.downloader = HLSDownloader(self.url_var.get(), self.output_dir_var.get())
+                self.downloader = HLSDownloader(
+                    self.url_var.get(), 
+                    str(Path(expanduser(self.output_dir_var.get())).resolve())
+                )
                 await self.downloader.initialize()
                 self.available_tracks = self.downloader.get_available_tracks()
                 
@@ -149,6 +153,9 @@ class HLSDownloaderGUI(ctk.CTk):
     def _async_download(self):
         async def download():
             try:
+                output_dir = str(Path(expanduser(self.output_dir_var.get())).resolve())
+                self.downloader.output_dir = Path(output_dir)
+                
                 self.status_var.set("Downloading video...")
                 self.progress_bar.set(0)
 
@@ -180,7 +187,7 @@ class HLSDownloaderGUI(ctk.CTk):
                     )
 
                 self.status_var.set("Merging streams...")
-                output_path = str(Path(self.output_dir_var.get()) / "output_partial.mkv")
+                output_path = str(Path(output_dir) / "output_partial.mkv")
                 await self.downloader.merge_streams(video_path, audio_path, output_path)
 
                 # Cleanup
