@@ -73,7 +73,7 @@ python main.py
    - Select output directory
    - Choose video resolution
    - Choose audio track (if multiple available)
-   - Enter start and end times (optional)
+   - Enter start and end times (select 0 for both to download the full episode)
    - Add subtitle URL if needed
 
 ## Legal Notice
