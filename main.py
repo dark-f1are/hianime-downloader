@@ -37,7 +37,12 @@ class HLSDownloader:
         self.base_url = master_playlist_url.rsplit('/', 1)[0] + '/'
         self.video_tracks: Dict[str, VideoTrack] = {}
         self.audio_tracks: Dict[str, AudioTrack] = {}
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': '*/*',
+        }
         self.session = requests.Session()
+        self.session.headers.update(self.headers)
         self.progress = Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -50,7 +55,8 @@ class HLSDownloader:
         """Initialize by parsing the master playlist."""
         try:
             self.output_dir.mkdir(exist_ok=True)
-            master_playlist = m3u8.load(self.master_playlist_url)
+            response = self.session.get(self.master_playlist_url)
+            master_playlist = m3u8.loads(response.text)
             self._parse_master_playlist(master_playlist)
         except Exception as e:
             raise
@@ -86,7 +92,7 @@ class HLSDownloader:
 
     async def _download_segment(self, session: aiohttp.ClientSession, segment_url: str) -> bytes:
         """Download a single segment using aiohttp."""
-        async with session.get(segment_url) as response:
+        async with session.get(segment_url, headers=self.headers) as response:
             response.raise_for_status()
             return await response.read()
 
@@ -98,27 +104,36 @@ class HLSDownloader:
         output_name: str
     ) -> Tuple[str, float]:
         output_path = self.output_dir / output_name
-        playlist = m3u8.load(playlist_url)
+        response = self.session.get(playlist_url)
+        playlist = m3u8.loads(response.text)
         total_time = initial_total_time = 0
         isFirstSegment = True
         segments_to_download = []
 
-        # Calculate segments to download
-        for segment in playlist.segments:
-            if total_time + segment.duration < start_time:
-                total_time += segment.duration
-                isFirstSegment = False
-                continue
-            if initial_total_time == 0 and isFirstSegment:
-                initial_total_time = 0
-            elif initial_total_time == 0 and not isFirstSegment:
-                initial_total_time = total_time
-            if total_time > end_time:
-                break
-            segments_to_download.append(
+        # Handle full episode download when both times are 0
+        if start_time == 0 and end_time == 0:
+            segments_to_download = [
                 urljoin(playlist_url.rsplit('/', 1)[0] + '/', segment.uri)
-            )
-            total_time += segment.duration
+                for segment in playlist.segments
+            ]
+            initial_total_time = 0
+        else:
+            # Calculate segments to download
+            for segment in playlist.segments:
+                if total_time + segment.duration < start_time:
+                    total_time += segment.duration
+                    isFirstSegment = False
+                    continue
+                if initial_total_time == 0 and isFirstSegment:
+                    initial_total_time = 0
+                elif initial_total_time == 0 and not isFirstSegment:
+                    initial_total_time = total_time
+                if total_time > end_time and end_time != 0:
+                    break
+                segments_to_download.append(
+                    urljoin(playlist_url.rsplit('/', 1)[0] + '/', segment.uri)
+                )
+                total_time += segment.duration
 
         # Download segments
         async with aiohttp.ClientSession() as session:
@@ -153,7 +168,7 @@ class HLSDownloader:
         adjusted_subtitle_path = self.output_dir / "adjusted_subtitle.vtt"
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(subtitle_url) as response:
+            async with session.get(subtitle_url, headers=self.headers) as response:
                 subtitle_content = await response.text()
                 with open(subtitle_path, 'w', encoding='utf-8') as f:
                     f.write(subtitle_content)
