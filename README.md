@@ -26,7 +26,7 @@ This tool is for educational purposes only. Please support content creators by u
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/abrar-wadud/hianime-downloader.git
+git clone https://github.com/dark-f1are/hianime-downloader.git
 cd hianime-downloader
 ```
 
@@ -56,7 +56,7 @@ python main.py
 1. Get the master playlist URL from hianime.to:
    
    **Option 1: Using Browser Extension (Recommended)**
-   - Install the Media Stream Detector browser extension from [GitHub](https://github.com/abrar-wadud/media-stream-detector)
+   - Install the Media Stream Detector browser extension from [GitHub](https://github.com/dark-f1are/media-stream-detector)
    - Open the anime episode in your browser
    - The extension will automatically detect and display the master.m3u8 and subtitle URLs
    - Copy the required URLs
