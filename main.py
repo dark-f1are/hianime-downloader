@@ -8,15 +8,8 @@ from webvtt import WebVTT, Caption
 from pathlib import Path
 import asyncio
 import aiohttp
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.panel import Panel
-from rich.table import Table
 import questionary
-from rich.text import Text
 from os.path import expanduser
-
-console = Console()
 
 @dataclass
 class VideoTrack:
@@ -43,13 +36,6 @@ class HLSDownloader:
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
-        self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-        )
 
     async def initialize(self):
         """Initialize by parsing the master playlist."""
@@ -137,17 +123,13 @@ class HLSDownloader:
 
         # Download segments
         async with aiohttp.ClientSession() as session:
-            with self.progress as progress:
-                task = progress.add_task(
-                    f"[cyan]Downloading {output_name}...",
-                    total=len(segments_to_download)
-                )
-                
-                segment_contents = []
-                for url in segments_to_download:
-                    content = await self._download_segment(session, url)
-                    segment_contents.append(content)
-                    progress.update(task, advance=1)
+            segment_contents = []
+            total_segments = len(segments_to_download)
+            for i, url in enumerate(segments_to_download, 1):
+                content = await self._download_segment(session, url)
+                segment_contents.append(content)
+                print(f"\rDownloading {output_name}: {i}/{total_segments}", end="")
+            print()
 
         # Write to file
         with open(output_path, 'wb') as f:
@@ -268,25 +250,19 @@ async def async_prompt(question_func, *args, **kwargs):
 
 async def get_user_input() -> Tuple[str, str]:
     """Get all user input in one place"""
-    console.print(Panel(
-        Text.assemble(("🎬 ", "bold yellow"), ("HLS Video Downloader", "bold blue"), (" 🎬", "bold yellow")),
-        subtitle="Made with ❤️  using Python",
-        border_style="cyan"
-    ))
-
+    print("HLS Video Downloader")
+    
     master_url = await async_prompt(
-        questionary.text(
-            "Enter master playlist URL:").ask
+        questionary.text("Enter master playlist URL:").ask
     )
     
     output_dir = await async_prompt(
         questionary.text(
             "Enter output directory:",
-            default=str(Path.home() / "Videos")  # Use absolute path as default
+            default=str(Path.home() / "Videos")
         ).ask
     )
 
-    # Expand user path and resolve to absolute path
     output_dir = str(Path(expanduser(output_dir)).resolve())
     return master_url, output_dir
 
@@ -330,41 +306,29 @@ async def get_user_selections(tracks: dict) -> Tuple[str, Optional[str], float, 
 
     return resolution, language, start_time, end_time, subtitle_url
 
-def create_tracks_table(tracks: dict) -> Table:
-    """Create a table to display available tracks."""
-    table = Table(title="Available Tracks")
-
-    table.add_column("Type", justify="center", style="cyan", no_wrap=True)
-    table.add_column("Resolution/Language", justify="center", style="magenta")
-    table.add_column("Bandwidth/Name", justify="center", style="green")
-
+def display_tracks(tracks: dict):
+    print("\nAvailable Tracks:")
+    print("\nVideo tracks:")
     for res, track in tracks["video_tracks"].items():
-        table.add_row("Video", res, str(track["bandwidth"]))
-
+        print(f"  {res} (bandwidth: {track['bandwidth']})")
+    
+    print("\nAudio tracks:")
     for lang, track in tracks["audio_tracks"].items():
-        table.add_row("Audio", lang, track["name"])
-
-    return table
+        print(f"  {lang} ({track['name']})")
 
 async def main():
     try:
-        # Get user input
         master_url, output_dir = await get_user_input()
         
-        # Initialize downloader
-        with console.status("[bold green]Initializing downloader..."):
-            downloader = HLSDownloader(master_url, output_dir)
-            await downloader.initialize()
+        print("Initializing downloader...")
+        downloader = HLSDownloader(master_url, output_dir)
+        await downloader.initialize()
 
-        # Display tracks and get selections
         tracks = downloader.get_available_tracks()
-        console.print("\n[bold cyan]Available Tracks:[/bold cyan]")
-        console.print(create_tracks_table(tracks))
+        display_tracks(tracks)
 
-        # Get user selections
         resolution, language, start_time, end_time, subtitle_url = await get_user_selections(tracks)
 
-        # Download and process streams
         video_path, video_initial_time = await downloader.download_partial_stream(
             downloader.video_tracks[resolution].url,
             start_time, end_time, "partial_video.ts"
@@ -383,17 +347,16 @@ async def main():
                 subtitle_url, video_initial_time, start_time, end_time
             )
 
-        # Merge and cleanup
         output_path = str(Path(output_dir) / "output_partial.mkv")
         await downloader.merge_streams(video_path, audio_path, output_path)
         downloader.cleanup([video_path, audio_path])
 
-        console.print(f"\n[bold green]Download complete! File saved as: {output_path}")
+        print(f"\nDownload complete! File saved as: {output_path}")
         if subtitle_path:
-            console.print(f"[bold green]Subtitles saved as: {subtitle_path}")
+            print(f"Subtitles saved as: {subtitle_path}")
 
     except Exception as e:
-        console.print(f"[bold red]Error: {str(e)}[/bold red]")
+        print(f"Error: {str(e)}")
         raise
 
 if __name__ == "__main__":
